@@ -943,7 +943,6 @@ class Transport:
     def outbound(packet):
         with Transport.transport_lock:
             sent = False
-            outbound_time = time.time()
 
             generate_receipt = False
             if (packet.create_receipt == True and
@@ -1039,131 +1038,9 @@ class Transport:
                             should_transmit = False
 
                         if packet.packet_type == RNS.Packet.ANNOUNCE:
-                            if packet.attached_interface == None:
-                                if interface.mode == RNS.Interfaces.Interface.Interface.MODE_ACCESS_POINT:
-                                    RNS.log("Blocking announce broadcast on "+str(interface)+" due to AP mode", RNS.LOG_EXTREME)
-                                    should_transmit = False
-
-                                elif interface.mode == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
-                                    local_destination = next((d for d in Transport.destinations if d.hash == packet.destination_hash), None)
-                                    if local_destination != None:
-                                        # RNS.log("Allowing announce broadcast on roaming-mode interface from instance-local destination", RNS.LOG_EXTREME)
-                                        pass
-                                    else:
-                                        from_interface = Transport.next_hop_interface(packet.destination_hash)
-                                        if from_interface == None or not hasattr(from_interface, "mode"):
-                                            should_transmit = False
-                                            if from_interface == None:
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface doesn't exist", RNS.LOG_EXTREME)
-                                            elif not hasattr(from_interface, "mode"):
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface has no mode configured", RNS.LOG_EXTREME)
-                                        else:
-                                            if from_interface.mode == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" due to roaming-mode next-hop interface", RNS.LOG_EXTREME)
-                                                should_transmit = False
-                                            elif from_interface.mode == RNS.Interfaces.Interface.Interface.MODE_BOUNDARY:
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" due to boundary-mode next-hop interface", RNS.LOG_EXTREME)
-                                                should_transmit = False
-
-                                elif interface.mode == RNS.Interfaces.Interface.Interface.MODE_BOUNDARY:
-                                    local_destination = next((d for d in Transport.destinations if d.hash == packet.destination_hash), None)
-                                    if local_destination != None:
-                                        # RNS.log("Allowing announce broadcast on boundary-mode interface from instance-local destination", RNS.LOG_EXTREME)
-                                        pass
-                                    else:
-                                        from_interface = Transport.next_hop_interface(packet.destination_hash)
-                                        if from_interface == None or not hasattr(from_interface, "mode"):
-                                            should_transmit = False
-                                            if from_interface == None:
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface doesn't exist", RNS.LOG_EXTREME)
-                                            elif not hasattr(from_interface, "mode"):
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface has no mode configured", RNS.LOG_EXTREME)
-                                        else:
-                                            if from_interface.mode == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
-                                                RNS.log("Blocking announce broadcast on "+str(interface)+" due to roaming-mode next-hop interface", RNS.LOG_EXTREME)
-                                                should_transmit = False
-
-                                else:
-                                    # Currently, annouces originating locally are always
-                                    # allowed, and do not conform to bandwidth caps.
-                                    # TODO: Rethink whether this is actually optimal.
-                                    if packet.hops > 0:
-
-                                        if not hasattr(interface, "announce_cap"):
-                                            interface.announce_cap = RNS.Reticulum.ANNOUNCE_CAP
-
-                                        if not hasattr(interface, "announce_allowed_at"):
-                                            interface.announce_allowed_at = 0
-
-                                        if not hasattr(interface, "announce_queue"):
-                                            interface.announce_queue = []
-
-                                        queued_announces = True if len(interface.announce_queue) > 0 else False
-                                        if not queued_announces and outbound_time > interface.announce_allowed_at and interface.bitrate != None and interface.bitrate != 0:
-                                            tx_time   = (len(packet.raw)*8) / interface.bitrate
-                                            wait_time = (tx_time / interface.announce_cap)
-                                            interface.announce_allowed_at = outbound_time + wait_time
-
-                                        else:
-                                            should_transmit = False
-                                            if not len(interface.announce_queue) >= RNS.Reticulum.MAX_QUEUED_ANNOUNCES:
-                                                should_queue = True
-
-                                                already_queued = False
-                                                for e in interface.announce_queue:
-                                                    if e["destination"] == packet.destination_hash:
-                                                        already_queued = True
-                                                        existing_entry = e
-
-                                                emission_timestamp = Transport.announce_emitted(packet)
-                                                if already_queued:
-                                                    should_queue = False
-
-                                                    if emission_timestamp > existing_entry["emitted"]:
-                                                        e["time"] = outbound_time
-                                                        e["hops"] = packet.hops
-                                                        e["emitted"] = emission_timestamp
-                                                        e["raw"] = packet.raw
-
-                                                if should_queue:
-                                                    entry = {
-                                                        "destination": packet.destination_hash,
-                                                        "time": outbound_time,
-                                                        "hops": packet.hops,
-                                                        "emitted": Transport.announce_emitted(packet),
-                                                        "raw": packet.raw
-                                                    }
-
-                                                    queued_announces = True if len(interface.announce_queue) > 0 else False
-                                                    interface.announce_queue.append(entry)
-
-                                                    if not queued_announces:
-                                                        wait_time = max(interface.announce_allowed_at - time.time(), 0)
-                                                        timer = threading.Timer(wait_time, interface.process_announce_queue)
-                                                        timer.start()
-
-                                                        if wait_time < 1:
-                                                            wait_time_str = str(round(wait_time*1000,2))+"ms"
-                                                        else:
-                                                            wait_time_str = str(round(wait_time*1,2))+"s"
-
-                                                        ql_str = str(len(interface.announce_queue))
-                                                        RNS.log("Added announce to queue (height "+ql_str+") on "+str(interface)+" for processing in "+wait_time_str, RNS.LOG_EXTREME)
-
-                                                    else:
-                                                        wait_time = max(interface.announce_allowed_at - time.time(), 0)
-
-                                                        if wait_time < 1:
-                                                            wait_time_str = str(round(wait_time*1000,2))+"ms"
-                                                        else:
-                                                            wait_time_str = str(round(wait_time*1,2))+"s"
-
-                                                        ql_str = str(len(interface.announce_queue))
-                                                        RNS.log("Added announce to queue (height "+ql_str+") on "+str(interface)+" for processing in "+wait_time_str, RNS.LOG_EXTREME)
-
-                                            else: pass
-
-                                    else: pass
+                            announce_should_transmit = Transport._outbound_handle_announce(packet, interface)
+                            if announce_should_transmit is not None:
+                                should_transmit = announce_should_transmit
 
                         if should_transmit:
                             if not stored_hash:
@@ -1177,6 +1054,136 @@ class Transport:
                             sent = True
 
             return sent
+
+    @staticmethod
+    def _outbound_handle_announce(packet, interface):
+        should_transmit = None
+        outbound_time = time.time()
+
+        if packet.attached_interface == None:
+            if interface.mode == RNS.Interfaces.Interface.Interface.MODE_ACCESS_POINT:
+                RNS.log("Blocking announce broadcast on "+str(interface)+" due to AP mode", RNS.LOG_EXTREME)
+                should_transmit = False
+
+            elif interface.mode == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
+                local_destination = next((d for d in Transport.destinations if d.hash == packet.destination_hash), None)
+                if local_destination != None:
+                    # RNS.log("Allowing announce broadcast on roaming-mode interface from instance-local destination", RNS.LOG_EXTREME)
+                    pass
+                else:
+                    from_interface = Transport.next_hop_interface(packet.destination_hash)
+                    if from_interface == None or not hasattr(from_interface, "mode"):
+                        should_transmit = False
+                        if from_interface == None:
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface doesn't exist", RNS.LOG_EXTREME)
+                        elif not hasattr(from_interface, "mode"):
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface has no mode configured", RNS.LOG_EXTREME)
+                    else:
+                        if from_interface.mode == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" due to roaming-mode next-hop interface", RNS.LOG_EXTREME)
+                            should_transmit = False
+                        elif from_interface.mode == RNS.Interfaces.Interface.Interface.MODE_BOUNDARY:
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" due to boundary-mode next-hop interface", RNS.LOG_EXTREME)
+                            should_transmit = False
+
+            elif interface.mode == RNS.Interfaces.Interface.Interface.MODE_BOUNDARY:
+                local_destination = next((d for d in Transport.destinations if d.hash == packet.destination_hash), None)
+                if local_destination != None:
+                    # RNS.log("Allowing announce broadcast on boundary-mode interface from instance-local destination", RNS.LOG_EXTREME)
+                    pass
+                else:
+                    from_interface = Transport.next_hop_interface(packet.destination_hash)
+                    if from_interface == None or not hasattr(from_interface, "mode"):
+                        should_transmit = False
+                        if from_interface == None:
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface doesn't exist", RNS.LOG_EXTREME)
+                        elif not hasattr(from_interface, "mode"):
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" since next hop interface has no mode configured", RNS.LOG_EXTREME)
+                    else:
+                        if from_interface.mode == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
+                            RNS.log("Blocking announce broadcast on "+str(interface)+" due to roaming-mode next-hop interface", RNS.LOG_EXTREME)
+                            should_transmit = False
+
+            else:
+                # Currently, annouces originating locally are always
+                # allowed, and do not conform to bandwidth caps.
+                # TODO: Rethink whether this is actually optimal.
+                if packet.hops > 0:
+
+                    if not hasattr(interface, "announce_cap"):
+                        interface.announce_cap = RNS.Reticulum.ANNOUNCE_CAP
+
+                    if not hasattr(interface, "announce_allowed_at"):
+                        interface.announce_allowed_at = 0
+
+                    if not hasattr(interface, "announce_queue"):
+                        interface.announce_queue = []
+
+                    queued_announces = True if len(interface.announce_queue) > 0 else False
+                    if not queued_announces and outbound_time > interface.announce_allowed_at and interface.bitrate != None and interface.bitrate != 0:
+                        tx_time   = (len(packet.raw)*8) / interface.bitrate
+                        wait_time = (tx_time / interface.announce_cap)
+                        interface.announce_allowed_at = outbound_time + wait_time
+
+                    else:
+                        should_transmit = False
+
+                        if not len(interface.announce_queue) >= RNS.Reticulum.MAX_QUEUED_ANNOUNCES:
+                            should_queue = True
+
+                            already_queued = False
+                            for e in interface.announce_queue:
+                                if e["destination"] == packet.destination_hash:
+                                    already_queued = True
+                                    existing_entry = e
+
+                            emission_timestamp = Transport.announce_emitted(packet)
+                            if already_queued:
+                                should_queue = False
+
+                                if emission_timestamp > existing_entry["emitted"]:
+                                    e["time"] = outbound_time
+                                    e["hops"] = packet.hops
+                                    e["emitted"] = emission_timestamp
+                                    e["raw"] = packet.raw
+
+                            if should_queue:
+                                entry = {
+                                    "destination": packet.destination_hash,
+                                    "time": outbound_time,
+                                    "hops": packet.hops,
+                                    "emitted": Transport.announce_emitted(packet),
+                                    "raw": packet.raw
+                                }
+
+                                queued_announces = True if len(interface.announce_queue) > 0 else False
+                                interface.announce_queue.append(entry)
+
+                                if not queued_announces:
+                                    wait_time = max(interface.announce_allowed_at - time.time(), 0)
+                                    timer = threading.Timer(wait_time, interface.process_announce_queue)
+                                    timer.start()
+
+                                    if wait_time < 1:
+                                        wait_time_str = str(round(wait_time*1000,2))+"ms"
+                                    else:
+                                        wait_time_str = str(round(wait_time*1,2))+"s"
+
+                                    ql_str = str(len(interface.announce_queue))
+                                    RNS.log("Added announce to queue (height "+ql_str+") on "+str(interface)+" for processing in "+wait_time_str, RNS.LOG_EXTREME)
+
+                                else:
+                                    wait_time = max(interface.announce_allowed_at - time.time(), 0)
+
+                                    if wait_time < 1:
+                                        wait_time_str = str(round(wait_time*1000,2))+"ms"
+                                    else:
+                                        wait_time_str = str(round(wait_time*1,2))+"s"
+
+                                    ql_str = str(len(interface.announce_queue))
+                                    RNS.log("Added announce to queue (height "+ql_str+") on "+str(interface)+" for processing in "+wait_time_str, RNS.LOG_EXTREME)
+
+        return should_transmit
 
     @staticmethod
     def add_packet_hash(packet_hash):
