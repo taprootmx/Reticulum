@@ -1341,15 +1341,15 @@ class Transport:
         if Transport.identity == None:
             return
 
-        with Transport.transport_lock:
-            packet = RNS.Packet(None, raw)
-            if not packet.unpack():
-                return
+        packet = RNS.Packet(None, raw)
+        if not packet.unpack():
+            return
 
-            packet.receiving_interface = interface
-            packet.hops += 1
+        packet.receiving_interface = interface
+        packet.hops += 1
 
-            if interface != None:
+        if interface != None:
+            with Transport.stats_lock:
                 if hasattr(interface, "r_stat_rssi"):
                     if interface.r_stat_rssi != None:
                         packet.rssi = interface.r_stat_rssi
@@ -3443,6 +3443,33 @@ class Transport:
         except Exception as e:
             RNS.log(f"Error while persisting blackhole list: {e}", RNS.LOG_ERROR)
             RNS.trace_exception(e)
+
+    @staticmethod
+    def get_packet_rssi(packet_hash):
+        with Transport.stats_lock:
+            for entry in Transport.local_client_rssi_cache:
+                if entry[0] == packet_hash:
+                    return entry[1]
+
+            return None
+
+    @staticmethod
+    def get_packet_snr(packet_hash):
+        with Transport.stats_lock:
+            for entry in Transport.local_client_snr_cache:
+                if entry[0] == packet_hash:
+                    return entry[1]
+
+            return None
+
+    @staticmethod
+    def get_packet_q(packet_hash):
+        with Transport.stats_lock:
+            for entry in Transport.local_client_q_cache:
+                if entry[0] == packet_hash:
+                    return entry[1]
+
+            return None
 
 
 # Table entry indices

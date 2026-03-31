@@ -1408,11 +1408,7 @@ class Reticulum:
             return response
 
         else:
-            for entry in RNS.Transport.local_client_rssi_cache:
-                if entry[0] == packet_hash:
-                    return entry[1]
-
-            return None
+            return RNS.Transport.get_packet_rssi(packet_hash)
 
     def get_packet_snr(self, packet_hash):
         if self.is_connected_to_shared_instance:
@@ -1422,11 +1418,7 @@ class Reticulum:
             return response
 
         else:
-            for entry in RNS.Transport.local_client_snr_cache:
-                if entry[0] == packet_hash:
-                    return entry[1]
-
-            return None
+            return RNS.Transport.get_packet_snr(packet_hash)
 
     def get_packet_q(self, packet_hash):
         if self.is_connected_to_shared_instance:
@@ -1436,11 +1428,7 @@ class Reticulum:
             return response
 
         else:
-            for entry in RNS.Transport.local_client_q_cache:
-                if entry[0] == packet_hash:
-                    return entry[1]
-
-            return None
+            return RNS.Transport.get_packet_q(packet_hash)
 
     def halt_interface(self, interface):
         pass
