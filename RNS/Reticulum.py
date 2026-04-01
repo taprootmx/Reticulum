@@ -390,7 +390,7 @@ class Reticulum:
                     RNS.log("Existing shared instance required, but this instance started as shared instance. Aborting startup.", RNS.LOG_VERBOSE)
 
                 else:
-                    RNS.Transport.interfaces.append(interface)
+                    RNS.Transport.register_interface(interface)
                     self.shared_instance_interface = interface
                     self.is_shared_instance = True
                     RNS.log("Started shared instance interface: "+str(interface), RNS.LOG_DEBUG)
@@ -410,7 +410,7 @@ class Reticulum:
                         interface._force_bitrate = True
                         RNS.log(f"Forcing shared instance bitrate of {RNS.prettyspeed(interface.bitrate)}", RNS.LOG_WARNING)
                         interface.optimise_mtu()
-                    RNS.Transport.interfaces.append(interface)
+                    RNS.Transport.register_interface(interface)
                     self.is_shared_instance = False
                     self.is_standalone_instance = False
                     self.is_connected_to_shared_instance = True
@@ -828,7 +828,7 @@ class Reticulum:
                         interface.ifac_identity = RNS.Identity.from_bytes(interface.ifac_key)
                         interface.ifac_signature = interface.ifac_identity.sign(RNS.Identity.full_hash(interface.ifac_key))
 
-                    RNS.Transport.interfaces.append(interface)
+                    RNS.Transport.register_interface(interface)
                     interface.final_init()
 
             interface = None
@@ -990,7 +990,7 @@ class Reticulum:
                     interface.ifac_identity = RNS.Identity.from_bytes(interface.ifac_key)
                     interface.ifac_signature = interface.ifac_identity.sign(RNS.Identity.full_hash(interface.ifac_key))
 
-                RNS.Transport.interfaces.append(interface)
+                RNS.Transport.register_interface(interface)
                 interface.final_init()
 
     def _should_persist_data(self):
@@ -1095,7 +1095,7 @@ class Reticulum:
             return response
         else:
             interfaces = []
-            for interface in RNS.Transport.interfaces:
+            for interface in RNS.Transport.interfaces.copy():
                 ifstats = {}
                 
                 if hasattr(interface, "clients"):
@@ -1277,16 +1277,17 @@ class Reticulum:
 
         else:
             path_table = []
-            for dst_hash in RNS.Transport.path_table:
-                path_hops = RNS.Transport.path_table[dst_hash][2]
+            pt_copy = RNS.Transport.path_table.copy()
+            for dst_hash in pt_copy:
+                path_hops = pt_copy[dst_hash][2]
                 if max_hops == None or path_hops <= max_hops:
                     entry = {
                         "hash": dst_hash,
-                        "timestamp": RNS.Transport.path_table[dst_hash][0],
-                        "via": RNS.Transport.path_table[dst_hash][1],
+                        "timestamp": pt_copy[dst_hash][0],
+                        "via": pt_copy[dst_hash][1],
                         "hops": path_hops,
-                        "expires": RNS.Transport.path_table[dst_hash][3],
-                        "interface": str(RNS.Transport.path_table[dst_hash][5]),
+                        "expires": pt_copy[dst_hash][3],
+                        "interface": str(pt_copy[dst_hash][5]),
                     }
                     path_table.append(entry)
 
@@ -1301,13 +1302,14 @@ class Reticulum:
 
         else:
             rate_table = []
-            for dst_hash in RNS.Transport.announce_rate_table:
+            art_copy = RNS.Transport.announce_rate_table.copy()
+            for dst_hash in art_copy:
                 entry = {
                     "hash": dst_hash,
-                    "last": RNS.Transport.announce_rate_table[dst_hash]["last"],
-                    "rate_violations": RNS.Transport.announce_rate_table[dst_hash]["rate_violations"],
-                    "blocked_until": RNS.Transport.announce_rate_table[dst_hash]["blocked_until"],
-                    "timestamps": RNS.Transport.announce_rate_table[dst_hash]["timestamps"],
+                    "last": art_copy[dst_hash]["last"],
+                    "rate_violations": art_copy[dst_hash]["rate_violations"],
+                    "blocked_until": art_copy[dst_hash]["blocked_until"],
+                    "timestamps": art_copy[dst_hash]["timestamps"],
                 }
                 rate_table.append(entry)
 
@@ -1331,13 +1333,7 @@ class Reticulum:
             return response
 
         else:
-            dropped_count = 0
-            for destination_hash in RNS.Transport.path_table:
-                if RNS.Transport.path_table[destination_hash][1] == transport_hash:
-                    RNS.Transport.expire_path(destination_hash)
-                    dropped_count += 1
-
-            return dropped_count
+            return RNS.Transport.expire_all_paths_via(transport_hash)
 
     def drop_announce_queues(self):
         if self.is_connected_to_shared_instance:
@@ -1446,7 +1442,7 @@ class Reticulum:
                 response = rpc_connection.recv()
                 return response
             
-        else: return RNS.Transport.blackholed_identities
+        else: return RNS.Transport.blackholed_identities.copy()
 
     def blackhole_identity(self, identity_hash, until=None, reason=None):
         if len(identity_hash) != RNS.Reticulum.TRUNCATED_HASHLENGTH//8: return False

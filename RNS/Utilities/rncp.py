@@ -185,7 +185,7 @@ def listen(configdir, identitypath = None, verbosity = 0, quietness = 0, allowed
             file_path = os.path.abspath(os.path.expanduser(f"{data}"))
 
         target_link = None
-        for link in RNS.Transport.active_links:
+        for link in RNS.Transport.active_links.copy():
             if link.link_id == link_id:
                 target_link = link
 

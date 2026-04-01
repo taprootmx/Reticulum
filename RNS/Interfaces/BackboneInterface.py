@@ -378,7 +378,7 @@ class BackboneInterface(Interface):
             spawned_interface.HW_MTU = self.HW_MTU
             spawned_interface.online = True
             RNS.log("Spawned new BackboneClient Interface: "+str(spawned_interface), RNS.LOG_VERBOSE)
-            RNS.Transport.interfaces.append(spawned_interface)
+            RNS.Transport.register_interface(spawned_interface)
             while spawned_interface in self.spawned_interfaces: self.spawned_interfaces.remove(spawned_interface)
             self.spawned_interfaces.append(spawned_interface)
             BackboneInterface.add_client_socket(socket, spawned_interface)
@@ -687,9 +687,8 @@ class BackboneClientInterface(Interface):
             while self in self.parent_interface.spawned_interfaces:
                 self.parent_interface.spawned_interfaces.remove(self)
 
-        if self in RNS.Transport.interfaces:
-            if not self.initiator:
-                RNS.Transport.interfaces.remove(self)
+        if not self.initiator:
+            RNS.Transport.deregister_interface(self)
 
 
     def __str__(self):

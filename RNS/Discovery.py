@@ -513,7 +513,7 @@ class InterfaceDiscovery():
             reserved_slots = max_autoconnected_interfaces//4
 
             if online_interfaces >= max_autoconnected_interfaces:
-                for interface in RNS.Transport.interfaces:
+                for interface in RNS.Transport.interfaces.copy():
                     if hasattr(interface, "bootstrap_only") and interface.bootstrap_only == True:
                         RNS.log(f"Tearing down bootstrap-only {interface} since target connected auto-discovered interface count has been reached", RNS.LOG_INFO)
                         if not interface in detached_interfaces: detached_interfaces.append(interface)
@@ -538,14 +538,14 @@ class InterfaceDiscovery():
 
     def teardown_interface(self, interface):
         interface.detach()
-        if interface in RNS.Transport.interfaces:  RNS.Transport.interfaces.remove(interface)
+        RNS.Transport.deregister_interface(interface)
         if interface in self.monitored_interfaces: self.monitored_interfaces.remove(interface)
 
     def autoconnect_count(self):
-        return len([i for i in RNS.Transport.interfaces if hasattr(i, "autoconnect_hash")])
+        return len([i for i in RNS.Transport.interfaces.copy() if hasattr(i, "autoconnect_hash")])
 
     def bootstrap_interface_count(self):
-        return len([i for i in RNS.Transport.interfaces if hasattr(i, "bootstrap_only") and i.bootstrap_only == True])
+        return len([i for i in RNS.Transport.interfaces.copy() if hasattr(i, "bootstrap_only") and i.bootstrap_only == True])
         
     def connect_discovered(self):
         if RNS.Reticulum.should_autoconnect_discovered_interfaces():
@@ -569,7 +569,7 @@ class InterfaceDiscovery():
 
     def interface_exists(self, info):
         exists = False
-        for interface in RNS.Transport.interfaces:
+        for interface in RNS.Transport.interfaces.copy():
             if hasattr(interface, "autoconnect_hash") and interface.autoconnect_hash == self.endpoint_hash(info):
                 exists = True
                 break

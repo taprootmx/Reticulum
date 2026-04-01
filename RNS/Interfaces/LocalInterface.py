@@ -320,11 +320,10 @@ class LocalClientInterface(Interface):
         self.OUT = False
         self.IN = False
 
-        if self in RNS.Transport.interfaces:
-            RNS.Transport.interfaces.remove(self)
+        RNS.Transport.deregister_interface(self)
 
         if self in RNS.Transport.local_client_interfaces:
-            RNS.Transport.local_client_interfaces.remove(self)
+            RNS.Transport.deregister_local_client_interface(self)
             if hasattr(self, "parent_interface") and self.parent_interface != None:
                 self.parent_interface.clients -= 1
                 if hasattr(RNS.Transport, "owner") and RNS.Transport.owner != None:
@@ -430,8 +429,8 @@ class LocalServerInterface(Interface):
                 spawned_interface.socket_path = self.socket_path
 
             if hasattr(self, "_force_bitrate"): spawned_interface._force_bitrate = self._force_bitrate
-            RNS.Transport.interfaces.append(spawned_interface)
-            RNS.Transport.local_client_interfaces.append(spawned_interface)
+            RNS.Transport.register_interface(spawned_interface)
+            RNS.Transport.register_local_client_interface(spawned_interface)
             BackboneInterface.add_client_socket(client_socket, spawned_interface)
             self.clients += 1
             return True
@@ -446,8 +445,8 @@ class LocalServerInterface(Interface):
             spawned_interface.parent_interface = self
             spawned_interface.bitrate = self.bitrate
             if hasattr(self, "_force_bitrate"): spawned_interface._force_bitrate = self._force_bitrate
-            RNS.Transport.interfaces.append(spawned_interface)
-            RNS.Transport.local_client_interfaces.append(spawned_interface)
+            RNS.Transport.register_interface(spawned_interface)
+            RNS.Transport.register_local_client_interface(spawned_interface)
             self.clients += 1
             spawned_interface.read_loop()
 
