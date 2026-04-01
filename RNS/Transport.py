@@ -2987,19 +2987,32 @@ class Transport:
 
                     unique_tag = destination_hash+tag_bytes
 
-                    if not unique_tag in Transport.discovery_pr_tags:
-                        Transport.discovery_pr_tags.append(unique_tag)
+                    if not Transport.transport_lock.acquire():
+                        RNS.log("Failed to acquire Transport.transport_lock. Dropping path request for "+RNS.prettyhexrep(destination_hash)+" with tag "+RNS.prettyhexrep(unique_tag), RNS.LOG_ERROR)
+                        return
 
-                        Transport.path_request(
-                            destination_hash,
-                            Transport.from_local_client(packet),
-                            packet.receiving_interface,
-                            requestor_transport_id = requesting_transport_instance,
-                            tag=tag_bytes
-                        )
+                    delayed_jobs = []
+                    try:
+                        if not unique_tag in Transport.discovery_pr_tags:
+                            Transport.discovery_pr_tags.append(unique_tag)
 
-                    else:
-                        RNS.log("Ignoring duplicate path request for "+RNS.prettyhexrep(destination_hash)+" with tag "+RNS.prettyhexrep(unique_tag), RNS.LOG_DEBUG)
+                            new_delayed_jobs = Transport.path_request(
+                                destination_hash,
+                                Transport.from_local_client(packet),
+                                packet.receiving_interface,
+                                requestor_transport_id = requesting_transport_instance,
+                                tag=tag_bytes
+                            )
+                            delayed_jobs.extend(new_delayed_jobs)
+
+                        else:
+                            RNS.log("Ignoring duplicate path request for "+RNS.prettyhexrep(destination_hash)+" with tag "+RNS.prettyhexrep(unique_tag), RNS.LOG_DEBUG)
+
+                    finally:
+                        Transport.transport_lock.release()
+
+                        for job in delayed_jobs:
+                            job()
 
                 else:
                     RNS.log("Ignoring tagless path request for "+RNS.prettyhexrep(destination_hash), RNS.LOG_DEBUG)
@@ -3009,6 +3022,11 @@ class Transport:
 
     @staticmethod
     def path_request(destination_hash, is_from_local_client, attached_interface, requestor_transport_id=None, tag=None):
+        # Collect outbound sends and return them so that
+        # path_request_handler can run them after the lock
+        # has been released.
+        delayed_jobs = []
+
         should_search_for_unknown = False
 
         if attached_interface != None:
@@ -3025,7 +3043,7 @@ class Transport:
         if len(Transport.local_client_interfaces) > 0:
             if destination_hash in Transport.path_table:
                 destination_interface = Transport.path_table[destination_hash][IDX_PT_RVCD_IF]
-                
+
                 if Transport.is_local_client_interface(destination_interface):
                     destination_exists_on_local_client = True
                     Transport.pending_local_path_requests[destination_hash] = attached_interface
@@ -3034,7 +3052,9 @@ class Transport:
             local_destination = next((d for d in Transport.destinations if d.hash == destination_hash), None)
 
         if local_destination != None:
-            local_destination.announce(path_response=True, tag=tag, attached_interface=attached_interface)
+            delayed_jobs.append(lambda:
+                local_destination.announce(path_response=True, tag=tag, attached_interface=attached_interface)
+            )
             RNS.log("Answering path request for "+RNS.prettyhexrep(destination_hash)+interface_str+", destination is local to this system", RNS.LOG_DEBUG)
 
         elif (RNS.Reticulum.transport_enabled() or is_from_local_client) and (destination_hash in Transport.path_table):
@@ -3094,7 +3114,7 @@ class Transport:
                     if packet.destination_hash in Transport.announce_table:
                         held_entry = Transport.announce_table[packet.destination_hash]
                         Transport.held_announces[packet.destination_hash] = held_entry
-                    
+
                     Transport.announce_table[packet.destination_hash] = [now, retransmit_timeout, retries, received_from, announce_hops, packet, local_rebroadcasts, block_rebroadcasts, attached_interface]
 
         elif is_from_local_client:
@@ -3104,7 +3124,9 @@ class Transport:
             request_tag = RNS.Identity.get_random_hash()
             for interface in Transport.interfaces:
                 if not interface == attached_interface:
-                    Transport.request_path(destination_hash, interface, tag = request_tag)
+                    delayed_jobs.append(lambda interface=interface:
+                        Transport.request_path(destination_hash, interface, tag=request_tag)
+                    )
 
         elif should_search_for_unknown:
             if destination_hash in Transport.discovery_path_requests:
@@ -3120,17 +3142,23 @@ class Transport:
                     if not interface == attached_interface:
                         # Use the previously extracted tag from this path request
                         # on the new path requests as well, to avoid potential loops
-                        Transport.request_path(destination_hash, on_interface=interface, tag=tag, recursive=True)
+                        delayed_jobs.append(lambda interface=interface:
+                            Transport.request_path(destination_hash, on_interface=interface, tag=tag, recursive=True)
+                        )
 
         elif not is_from_local_client and len(Transport.local_client_interfaces) > 0:
             # Forward the path request on all local
             # client interfaces
             RNS.log("Forwarding path request for "+RNS.prettyhexrep(destination_hash)+interface_str+" to local clients", RNS.LOG_DEBUG)
             for interface in Transport.local_client_interfaces:
-                Transport.request_path(destination_hash, on_interface=interface)
+                delayed_jobs.append(lambda interface=interface:
+                    Transport.request_path(destination_hash, on_interface=interface)
+                )
 
         else:
             RNS.log("Ignoring path request for "+RNS.prettyhexrep(destination_hash)+interface_str+", no path known", RNS.LOG_DEBUG)
+
+        return delayed_jobs
 
     @staticmethod
     def from_local_client(packet):
