@@ -462,13 +462,15 @@ class PacketReceipt:
                     link.last_proof = self.concluded_at
 
                     if self.callbacks.delivery != None:
-                        try:
-                            self.callbacks.delivery(self)
-                        except Exception as e:
-                            RNS.log("An error occurred while evaluating external delivery callback for "+str(link), RNS.LOG_ERROR)
-                            RNS.log("The contained exception was: "+str(e), RNS.LOG_ERROR)
-                            RNS.trace_exception(e)
-                            
+                        def job():
+                            try:
+                                self.callbacks.delivery(self)
+                            except Exception as e:
+                                RNS.log("An error occurred while evaluating external delivery callback for "+str(link), RNS.LOG_ERROR)
+                                RNS.log("The contained exception was: "+str(e), RNS.LOG_ERROR)
+                                RNS.trace_exception(e)
+                        threading.Thread(target=job, daemon=True).start()
+
                     return True
                 else:
                     return False
@@ -508,10 +510,12 @@ class PacketReceipt:
                     self.proof_packet = proof_packet
 
                     if self.callbacks.delivery != None:
-                        try:
-                            self.callbacks.delivery(self)
-                        except Exception as e:
-                            RNS.log("Error while executing proof validated callback. The contained exception was: "+str(e), RNS.LOG_ERROR)
+                        def job():
+                            try:
+                                self.callbacks.delivery(self)
+                            except Exception as e:
+                                RNS.log("Error while executing proof validated callback. The contained exception was: "+str(e), RNS.LOG_ERROR)
+                        threading.Thread(target=job, daemon=True).start()
 
                     return True
                 else:
@@ -536,11 +540,13 @@ class PacketReceipt:
                     self.proof_packet = proof_packet
 
                     if self.callbacks.delivery != None:
-                        try:
-                            self.callbacks.delivery(self)
-                        except Exception as e:
-                            RNS.log("Error while executing proof validated callback. The contained exception was: "+str(e), RNS.LOG_ERROR)
-                            
+                        def job():
+                            try:
+                                self.callbacks.delivery(self)
+                            except Exception as e:
+                                RNS.log("Error while executing proof validated callback. The contained exception was: "+str(e), RNS.LOG_ERROR)
+                        threading.Thread(target=job, daemon=True).start()
+
                     return True
             else:
                 return False

@@ -37,7 +37,7 @@ import struct
 import inspect
 import threading
 from time import sleep
-from threading import Lock, RLock
+from threading import Lock
 from .vendor import umsgpack as umsgpack
 from RNS.Interfaces.BackboneInterface import BackboneInterface
 
@@ -140,8 +140,9 @@ class Transport:
     pending_local_path_requests = {}
 
     start_time                  = None
-    transport_lock              = RLock()
+    transport_lock              = Lock()
     transport_lock_timeout      = 0.05
+    stats_lock                  = Lock()
     hashlist_maxsize            = 1000000
     job_interval                = 0.250
     links_last_checked          = 0.0
@@ -941,33 +942,29 @@ class Transport:
 
     @staticmethod
     def outbound(packet):
+        # PacketReceipt Objects must be created outside of the lock, so we
+        # collect packets that need to be transmitted and handle them at the
+        # appropriate time. This stores 5-tuples of (sent_packet,
+        # outbound_interface, raw, update_path_table, update_interface).
+        delayed_packets = []
+
+        sent = False
+
+        generate_receipt = False
+        if (packet.create_receipt == True and
+            # Only generate receipts for DATA packets
+            packet.packet_type == RNS.Packet.DATA and
+            # Don't generate receipts for PLAIN destinations
+            packet.destination.type != RNS.Destination.PLAIN and
+            # Don't generate receipts for link-related packets
+            not (packet.context >= RNS.Packet.KEEPALIVE and packet.context <= RNS.Packet.LRPROOF) and
+            # Don't generate receipts for resource packets
+            not (packet.context >= RNS.Packet.RESOURCE and packet.context <= RNS.Packet.RESOURCE_RCL)):
+
+            generate_receipt = True
+
+
         with Transport.transport_lock:
-            sent = False
-
-            generate_receipt = False
-            if (packet.create_receipt == True and
-                # Only generate receipts for DATA packets
-                packet.packet_type == RNS.Packet.DATA and
-                # Don't generate receipts for PLAIN destinations
-                packet.destination.type != RNS.Destination.PLAIN and
-                # Don't generate receipts for link-related packets
-                not (packet.context >= RNS.Packet.KEEPALIVE and packet.context <= RNS.Packet.LRPROOF) and
-                # Don't generate receipts for resource packets
-                not (packet.context >= RNS.Packet.RESOURCE and packet.context <= RNS.Packet.RESOURCE_RCL)):
-
-                generate_receipt = True
-
-            def packet_sent(packet):
-                packet.sent = True
-                packet.sent_at = time.time()
-
-                if generate_receipt:
-                    packet.receipt = RNS.PacketReceipt(packet)
-                    Transport.receipts.append(packet.receipt)
-
-                # TODO: Enable when caching has been redesigned
-                # Transport.cache(packet)
-
             # Check if we have a known path for the destination in the path table
             if packet.packet_type != RNS.Packet.ANNOUNCE and packet.destination.type != RNS.Destination.PLAIN and packet.destination.type != RNS.Destination.GROUP and packet.destination_hash in Transport.path_table:
                 outbound_interface = Transport.path_table[packet.destination_hash][IDX_PT_RVCD_IF]
@@ -985,10 +982,7 @@ class Transport:
                         new_raw += packet.raw[1:2]
                         new_raw += Transport.path_table[packet.destination_hash][IDX_PT_NEXT_HOP]
                         new_raw += packet.raw[2:]
-                        packet_sent(packet)
-                        Transport.transmit(outbound_interface, new_raw)
-                        Transport.path_table[packet.destination_hash][IDX_PT_TIMESTAMP] = time.time()
-                        sent = True
+                        delayed_packets.append((packet, outbound_interface, new_raw, True, False))
 
                 # In the special case where we are connected to a local shared
                 # Reticulum instance, and the destination is one hop away, we
@@ -1005,18 +999,13 @@ class Transport:
                         new_raw += packet.raw[1:2]
                         new_raw += Transport.path_table[packet.destination_hash][IDX_PT_NEXT_HOP]
                         new_raw += packet.raw[2:]
-                        packet_sent(packet)
-                        Transport.transmit(outbound_interface, new_raw)
-                        Transport.path_table[packet.destination_hash][IDX_PT_TIMESTAMP] = time.time()
-                        sent = True
+                        delayed_packets.append((packet, outbound_interface, new_raw, True, False))
 
                 # If none of the above applies, we know the destination is
                 # directly reachable, and also on which interface, so we
                 # simply transmit the packet directly on that one.
                 else:
-                    packet_sent(packet)
-                    Transport.transmit(outbound_interface, packet.raw)
-                    sent = True
+                    delayed_packets.append((packet, outbound_interface, packet.raw, False, False))
 
             # If we don't have a known path for the destination, we'll
             # broadcast the packet on all outgoing interfaces, or the
@@ -1047,13 +1036,53 @@ class Transport:
                                 Transport.add_packet_hash(packet.packet_hash)
                                 stored_hash = True
 
-                            Transport.transmit(interface, packet.raw)
-                            if packet.packet_type == RNS.Packet.ANNOUNCE:
-                                interface.sent_announce()
-                            packet_sent(packet)
-                            sent = True
+                            #TODO: Broadcasting on all outgoing interfaces creates multiple
+                            # PacketReceipts, but a Packet can only keep track of a single
+                            # receipt.
+                            delayed_packets.append((
+                                packet,
+                                interface,
+                                packet.raw,
+                                False,
+                                packet.packet_type == RNS.Packet.ANNOUNCE
+                            ))
 
-            return sent
+        #TODO: We have to keep track of all generated PacketReceipts, but in
+        # reality each sent_packet references the same Packet Object every
+        # time. This code retains the previous behavior but should be fixed
+        # later.
+        packet_receipts = []
+        for sent_packet, _, _, _, _ in delayed_packets:
+            sent_packet.sent = True
+            sent_packet.sent_at = time.time()
+
+            if generate_receipt:
+                sent_packet.receipt = RNS.PacketReceipt(sent_packet)
+                packet_receipts.append(sent_packet.receipt)
+
+        with Transport.transport_lock:
+            for receipt in packet_receipts:
+                Transport.receipts.append(receipt)
+
+            for (sent_packet,
+                 outbound_interface,
+                 raw,
+                 update_path_table,
+                 update_interface) in delayed_packets:
+                Transport.transmit(outbound_interface, raw)
+
+                if update_path_table:
+                    Transport.path_table[sent_packet.destination_hash][IDX_PT_TIMESTAMP] = time.time()
+
+                if update_interface:
+                    outbound_interface.sent_announce()
+
+                # TODO: Enable when caching has been redesigned
+                # Transport.cache(packet)
+
+                sent = True
+
+        return sent
 
     @staticmethod
     def _outbound_handle_announce(packet, interface):
@@ -1342,7 +1371,16 @@ class Transport:
                         while len(Transport.local_client_q_cache) > Transport.LOCAL_CLIENT_CACHE_MAXSIZE:
                             Transport.local_client_q_cache.pop(0)
 
+        # Hold the lock for the entirety of inbound processing
+        # to ensure that we maintain a consistent view of
+        # all routing table state.
         if Transport.transport_lock.acquire():
+            new_inbound_packets = []
+            new_outbound_announces = []
+            new_outbound_packets = []
+            delayed_jobs = []
+            exception_raised = False
+
             try:
                 if len(Transport.local_client_interfaces) > 0:
                     if Transport.is_local_client_interface(interface):
@@ -1421,7 +1459,13 @@ class Transport:
                     # it, do so and stop processing. Otherwise resume
                     # normal processing.
                     if packet.context == RNS.Packet.CACHE_REQUEST:
-                        if Transport.cache_request_packet(packet):
+                        cache_packet = Transport.get_cache_request_packet(packet);
+                        if cache_packet is not None:
+                            # If the packet was retrieved from the local
+                            # cache, replay it to the Transport instance,
+                            # so that it can be directed towards it original
+                            # destination.
+                            new_inbound_packets.append(cache_packet)
                             return
 
                     # If the packet is in transport, check whether we
@@ -1446,26 +1490,47 @@ class Transport:
                 # announces, queueing rebroadcasts of these, and removal
                 # of queued announce rebroadcasts once handed to the next node.
                 if packet.packet_type == RNS.Packet.ANNOUNCE:
-                    if Transport._inbound_handle_announce(packet, interface):
-                        return
+                    new_announces = Transport._inbound_handle_announce(packet, interface)
+                    new_outbound_announces.extend(new_announces)
 
                 # Handling for link requests to local destinations
                 elif packet.packet_type == RNS.Packet.LINKREQUEST:
-                    if Transport._inbound_handle_local_link_request(packet, interface):
-                        return
+                    delayed_job = Transport._inbound_handle_local_link_request(packet, interface)
+                    if delayed_job is not None:
+                        delayed_jobs.extend([delayed_job])
 
                 # Handling for local data packets
                 elif packet.packet_type == RNS.Packet.DATA:
-                    Transport._inbound_handle_local_data_packet(packet, interface)
+                    new_packets, new_delayed_jobs = Transport._inbound_handle_local_data_packet(packet, interface)
+                    new_outbound_packets.extend(new_packets)
+                    delayed_jobs.extend(new_delayed_jobs)
 
                 # Handling for proofs and link-request proofs
                 elif packet.packet_type == RNS.Packet.PROOF:
-                    Transport._inbound_handle_proof(packet, interface)
+                    new_delayed_jobs = Transport._inbound_handle_proof(packet, interface)
+                    delayed_jobs.extend(new_delayed_jobs)
+
             except Exception as e:
+                exception_raised = True
+
                 RNS.log("An unhandled exception occurred while running Transport.inbound.", RNS.LOG_ERROR)
                 RNS.log("The contained exception was: "+str(e), RNS.LOG_ERROR)
             finally:
                 Transport.transport_lock.release()
+
+                if not exception_raised:
+                    for packet in new_inbound_packets:
+                        Transport.inbound(packet.raw, packet.receiving_interface)
+
+                    for new_announce in new_outbound_announces:
+                        new_announce.send()
+
+                    for packet in new_outbound_packets:
+                        packet.send()
+
+                    for job in delayed_jobs:
+                        job()
+
 
     @staticmethod
     def _inbound_handle_packet_transport(packet, interface):
@@ -1596,6 +1661,11 @@ class Transport:
 
     @staticmethod
     def _inbound_handle_announce(packet, interface):
+        # We can't send packets while the lock is held, so collect new outbound
+        # announces and return them to Transport.inbound for handling at the
+        # appropriate time.
+        new_outbound_announces = []
+
         if interface != None and RNS.Identity.validate_announce(packet, only_validate_signature=True):
             interface.received_announce()
 
@@ -1606,7 +1676,7 @@ class Transport:
             # by normal announce rate limiting.
             if interface.should_ingress_limit():
                 interface.hold_announce(packet)
-                return True
+                return new_outbound_announces
 
         local_destination = next((d for d in Transport.destinations if d.hash == packet.destination_hash), None)
         if local_destination == None and RNS.Identity.validate_announce(packet):
@@ -1636,6 +1706,7 @@ class Transport:
 
             else:
                 received_from = packet.destination_hash
+
 
             # Check if this announce should be inserted into
             # announce and destination tables
@@ -1850,7 +1921,7 @@ class Transport:
                                         )
 
                                         new_announce.hops = packet.hops
-                                        new_announce.send()
+                                        new_outbound_announces.append(new_announce)
 
                             else:
                                 #TODO: this branch is identical.
@@ -1869,7 +1940,7 @@ class Transport:
                                         )
 
                                         new_announce.hops = packet.hops
-                                        new_announce.send()
+                                        new_outbound_announces.append(new_announce)
 
                         # If we have any waiting discovery path requests
                         # for this destination, we retransmit to that
@@ -1901,7 +1972,7 @@ class Transport:
                             )
 
                             new_announce.hops = packet.hops
-                            new_announce.send()
+                            new_outbound_announces.append(new_announce)
 
                         if not Transport.owner.is_connected_to_shared_instance:
                             Transport.cache(packet, force_cache=True, packet_type="announce")
@@ -1975,9 +2046,15 @@ class Transport:
                                 RNS.log("The contained exception was: "+str(e), RNS.LOG_ERROR)
                                 RNS.trace_exception(e)
 
+        return new_outbound_announces
+
 
     @staticmethod
     def _inbound_handle_local_link_request(packet, interface):
+        # We can't receive to a destination while the lock is held, so we
+        # return that job to Transport.inbound to be handled at the appropriate
+        # time.
+
         if packet.transport_id == None or packet.transport_id == Transport.identity.hash:
             for destination in Transport.destinations:
                 if destination.hash == packet.destination_hash and destination.type == packet.destination_type:
@@ -2002,13 +2079,20 @@ class Transport:
                                     packet.data  = packet.data[:-RNS.Link.LINK_MTU_SIZE]+clamped_mtu
                                 except Exception as e:
                                     RNS.log(f"Dropping link request packet to local destination. The contained exception was: {e}", RNS.LOG_WARNING)
-                                    return True
+                                    return None
 
                     packet.destination = destination
-                    destination.receive(packet)
+                    return lambda destination=destination, packet=packet: destination.receive(packet)
 
     @staticmethod
     def _inbound_handle_local_data_packet(packet, interface):
+        # We can't send packets, receive to a link, or receive to a destination
+        # while the lock is held, so collect new outbound packets and delayed
+        # jobs and return them to Transport.inbound for handling at the
+        # appropriate time.
+        new_outbound_packets = []
+        delayed_jobs = []
+
         if packet.destination_type == RNS.Destination.LINK:
             for link in Transport.active_links:
                 if link.link_id == packet.destination_hash:
@@ -2018,11 +2102,17 @@ class Transport:
                             cached_packet = Transport.get_cached_packet(packet.data)
                             if cached_packet != None:
                                 cached_packet.unpack()
-                                RNS.Packet(destination=link, data=cached_packet.data,
-                                           packet_type=cached_packet.packet_type, context=cached_packet.context).send()
+
+                                new_outbound_packet = RNS.Packet(
+                                    destination=link,
+                                    data=cached_packet.data,
+                                    packet_type=cached_packet.packet_type,
+                                    context=cached_packet.context
+                                )
+                                new_outbound_packets.append(new_outbound_packet)
 
                         else:
-                            link.receive(packet)
+                            delayed_jobs.append(lambda link=link, packet=packet: link.receive(packet))
                     else:
                         # In the strange and rare case that an interface
                         # is partly malfunctioning, and a link-associated
@@ -2037,20 +2127,34 @@ class Transport:
             for destination in Transport.destinations:
                 if destination.hash == packet.destination_hash and destination.type == packet.destination_type:
                     packet.destination = destination
-                    if destination.receive(packet):
-                        if destination.proof_strategy == RNS.Destination.PROVE_ALL:
-                            packet.prove()
 
-                        elif destination.proof_strategy == RNS.Destination.PROVE_APP:
-                            if destination.callbacks.proof_requested:
-                                try:
-                                    if destination.callbacks.proof_requested(packet):
-                                        packet.prove()
-                                except Exception as e:
-                                    RNS.log("Error while executing proof request callback. The contained exception was: "+str(e), RNS.LOG_ERROR)
+                    def job(packet=packet, destination=destination):
+                        if destination.receive(packet):
+                            if destination.proof_strategy == RNS.Destination.PROVE_ALL:
+                                packet.prove()
+
+                            elif destination.proof_strategy == RNS.Destination.PROVE_APP:
+                                if destination.callbacks.proof_requested:
+                                    try:
+                                        if destination.callbacks.proof_requested(packet):
+                                            packet.prove()
+                                    except Exception as e:
+                                        RNS.log("Error while executing proof request callback. The contained exception was: "+str(e), RNS.LOG_ERROR)
+                    delayed_jobs.append(job);
+
+                    # Entries in Transport.destinations are enforced to be
+                    # unique so we can stop processing here.
+                    break
+
+        return (new_outbound_packets, delayed_jobs)
 
     @staticmethod
     def _inbound_handle_proof(packet, interface):
+        # We can't validate link proofs or receive to links while the lock is
+        # held, so collect these delayed jobs and return them to
+        # Transport.inbound for handling at the appropriate time.
+        delayed_jobs = []
+
         if packet.context == RNS.Packet.LRPROOF:
             # This is a link request proof, check if it
             # needs to be transported
@@ -2114,12 +2218,12 @@ class Transport:
                             # have determined that it's actually destined
                             # for this system, and then validate the proof
                             Transport.add_packet_hash(packet.packet_hash)
-                            link.validate_proof(packet)
+                            delayed_jobs.append(lambda link=link, packet=packet: link.validate_proof(packet))
 
         elif packet.context == RNS.Packet.RESOURCE_PRF:
             for link in Transport.active_links:
                 if link.link_id == packet.destination_hash:
-                    link.receive(packet)
+                    delayed_jobs.append(lambda link=link, packet=packet: link.receive(packet))
         else:
             if packet.destination_type == RNS.Destination.LINK:
                 for link in Transport.active_links:
@@ -2160,6 +2264,8 @@ class Transport:
                 if receipt_validated:
                     if receipt in Transport.receipts:
                         Transport.receipts.remove(receipt)
+
+        return delayed_jobs
 
 
     # Check special conditions for local clients connected
@@ -2324,14 +2430,15 @@ class Transport:
     @staticmethod
     def activate_link(link):
         RNS.log("Activating link "+str(link), RNS.LOG_EXTREME)
-        if link in Transport.pending_links:
-            if link.status != RNS.Link.ACTIVE:
-                raise IOError("Invalid link state for link activation: "+str(link.status))
-            Transport.pending_links.remove(link)
-            Transport.active_links.append(link)
-            link.status = RNS.Link.ACTIVE
-        else:
-            RNS.log("Attempted to activate a link that was not in the pending table", RNS.LOG_ERROR)
+        with Transport.transport_lock:
+            if link in Transport.pending_links:
+                if link.status != RNS.Link.ACTIVE:
+                    raise IOError("Invalid link state for link activation: "+str(link.status))
+                Transport.pending_links.remove(link)
+                Transport.active_links.append(link)
+                link.status = RNS.Link.ACTIVE
+            else:
+                RNS.log("Attempted to activate a link that was not in the pending table", RNS.LOG_ERROR)
 
     @staticmethod
     def register_announce_handler(handler):
@@ -2452,21 +2559,16 @@ class Transport:
             return None
 
     @staticmethod
-    def cache_request_packet(packet):
+    def get_cache_request_packet(packet):
         if len(packet.data) == RNS.Identity.HASHLENGTH/8:
-            packet = Transport.get_cached_packet(packet.data)
+            cache_packet = Transport.get_cached_packet(packet.data)
 
-            if packet != None:
-                # If the packet was retrieved from the local
-                # cache, replay it to the Transport instance,
-                # so that it can be directed towards it original
-                # destination.
-                Transport.inbound(packet.raw, packet.receiving_interface)
-                return True
+            if cache_packet != None:
+                return cache_packet
             else:
-                return False
+                return None
         else:
-            return False
+            return None
 
     @staticmethod
     def cache_request(packet_hash, destination):
