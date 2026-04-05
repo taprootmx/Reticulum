@@ -1087,4 +1087,6 @@ class WeaveInterfacePeer(Interface):
             except Exception as e:
                 RNS.log(f"Could not remove {self} from parent interface on detach. The contained exception was: {e}", RNS.LOG_ERROR)
 
-        RNS.Transport.deregister_interface(self)
+        def job():
+            RNS.Transport.deregister_interface(self)
+        threading.Thread(target=job, daemon=True).start()

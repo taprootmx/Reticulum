@@ -827,7 +827,9 @@ class I2PInterfacePeer(Interface):
                 self.parent_interface.spawned_interfaces.remove(self)
 
         if not self.initiator:
-            RNS.Transport.deregister_interface(self)
+            def job():
+                RNS.Transport.deregister_interface(self)
+            threading.Thread(target=job, daemon=True).start()
 
 
     def __str__(self):

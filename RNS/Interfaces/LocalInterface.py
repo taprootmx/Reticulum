@@ -320,14 +320,17 @@ class LocalClientInterface(Interface):
         self.OUT = False
         self.IN = False
 
-        RNS.Transport.deregister_interface(self)
+        def job():
+            RNS.Transport.deregister_interface(self)
 
-        if self in RNS.Transport.local_client_interfaces:
-            RNS.Transport.deregister_local_client_interface(self)
-            if hasattr(self, "parent_interface") and self.parent_interface != None:
-                self.parent_interface.clients -= 1
-                if hasattr(RNS.Transport, "owner") and RNS.Transport.owner != None:
-                    RNS.Transport.owner._should_persist_data()
+            if self in RNS.Transport.local_client_interfaces:
+                RNS.Transport.deregister_local_client_interface(self)
+                if hasattr(self, "parent_interface") and self.parent_interface != None:
+                    self.parent_interface.clients -= 1
+                    if hasattr(RNS.Transport, "owner") and RNS.Transport.owner != None:
+                        RNS.Transport.owner._should_persist_data()
+
+        threading.Thread(target=job, daemon=True).start()
 
         if nowarning == False:
             RNS.log("The interface "+str(self)+" experienced an unrecoverable error and is being torn down. Restart Reticulum to attempt to open this interface again.", RNS.LOG_ERROR)
