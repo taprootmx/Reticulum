@@ -63,7 +63,8 @@ LOG_STDOUT   = 0x91
 LOG_FILE     = 0x92
 LOG_CALLBACK = 0x93
 
-LOG_MAXSIZE  = 5*1024*1024
+LOG_MAXSIZE  = 30*1024*1024
+LOG_MAXROT   = 9
 
 loglevel            = LOG_NOTICE
 logfile             = None
@@ -149,12 +150,19 @@ def log(msg, level=3, _override_destination = False, pt=False, thread_info=False
                     file = open(logfile, "a")
                     file.write(logstring+"\n")
                     file.close()
-                    
+
                     if os.path.getsize(logfile) > LOG_MAXSIZE:
-                        prevfile = logfile+".1"
-                        if os.path.isfile(prevfile):
-                            os.unlink(prevfile)
-                        os.rename(logfile, prevfile)
+                        for i in range(LOG_MAXROT, 0, -1):
+                            oldfile = f"{logfile}.{i}"
+                            if os.path.isfile(oldfile):
+                                if i == LOG_MAXROT:
+                                    os.unlink(oldfile)
+                                else:
+                                    rotfile = f"{logfile}.{i+1}"
+                                    os.rename(oldfile, rotfile)
+
+                        rotfile = f"{logfile}.1"
+                        os.rename(logfile, rotfile)
 
                 except Exception as e:
                     _always_override_destination = True
