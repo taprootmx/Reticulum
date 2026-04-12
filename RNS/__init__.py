@@ -35,23 +35,10 @@ import time
 import datetime
 import random
 import threading
+import inspect
+from functools import wraps
 
 from ._version import __version__
-
-from .Reticulum import Reticulum
-from .Identity import Identity
-from .Link import Link, RequestReceipt
-from .Channel import MessageBase
-from .Buffer import Buffer, RawChannelReader, RawChannelWriter
-from .Transport import Transport
-from .Discovery import InterfaceAnnouncer
-from .Destination import Destination
-from .Packet import Packet
-from .Packet import PacketReceipt
-from .Resolver import Resolver
-from .Resource import Resource, ResourceAdvertisement
-from .Cryptography import HKDF
-from .Cryptography import Hashes
 
 py_modules  = glob.glob(os.path.dirname(__file__)+"/*.py")
 pyc_modules = glob.glob(os.path.dirname(__file__)+"/*.pyc")
@@ -78,13 +65,16 @@ LOG_CALLBACK = 0x93
 
 LOG_MAXSIZE  = 5*1024*1024
 
-loglevel        = LOG_NOTICE
-logfile         = None
-logdest         = LOG_STDOUT
-logcall         = None
-logtimefmt      = "%Y-%m-%d %H:%M:%S"
-logtimefmt_p    = "%H:%M:%S.%f"
-compact_log_fmt = False
+loglevel            = LOG_NOTICE
+logfile             = None
+logdest             = LOG_STDOUT
+logcall             = None
+logtimefmt          = "%Y-%m-%d %H:%M:%S"
+logtimefmt_p        = "%Y-%m-%d %H:%M:%S.%f"
+always_precise_time = True
+compact_log_fmt     = False
+always_thread_info  = True
+disable_func_logs   = False
 
 instance_random = random.Random()
 instance_random.seed(os.urandom(10))
@@ -127,18 +117,25 @@ def timestamp_str(time_s):
 def precise_timestamp_str(time_s):
     return datetime.datetime.now().strftime(logtimefmt_p)[:-3]
 
-def log(msg, level=3, _override_destination = False, pt=False):
+def log(msg, level=3, _override_destination = False, pt=False, thread_info=False):
     if loglevel == LOG_NONE: return
-    global _always_override_destination, compact_log_fmt
+    global _always_override_destination, compact_log_fmt, always_precise_time, always_thread_info
     msg = str(msg)
     if loglevel >= level:
-        if pt:
-            logstring = "["+precise_timestamp_str(time.time())+"] "+loglevelname(level)+" "+msg
+        if pt or always_precise_time:
+            timestr = precise_timestamp_str(time.time())
         else:
-            if not compact_log_fmt:
-                logstring = "["+timestamp_str(time.time())+"] "+loglevelname(level)+" "+msg
-            else:
-                logstring = "["+timestamp_str(time.time())+"] "+msg
+            timestr = timestamp_str(time.time())
+
+        if not compact_log_fmt:
+            logstring = "["+timestr+"] "+loglevelname(level)+" "
+        else:
+            logstring = "["+timestr+"] "
+
+        if thread_info or always_thread_info:
+            logstring += thread_info_str()+" "
+
+        logstring += msg
 
         with logging_lock:
             if (logdest == LOG_STDOUT or _always_override_destination or _override_destination):
@@ -173,7 +170,29 @@ def log(msg, level=3, _override_destination = False, pt=False):
                     log("Exception occurred while calling external log handler: "+str(e), LOG_CRITICAL)
                     log("Dumping future log events to console!", LOG_CRITICAL)
                     log(msg, level)
-                
+
+def log_func(func):
+    """
+    Decorator to print function call details before and after running, helpful
+    for debugging concurrency issues.
+    """
+
+    if disable_func_logs:
+        return func
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        func_args = inspect.signature(func).bind(*args, **kwargs).arguments
+        func_args_str = ", ".join(map("{0[0]} = {0[1]!r}".format, func_args.items()))
+        log(f"Begin :: {func.__module__}.{func.__qualname__} ( {func_args_str} )", LOG_EXTREME, pt=True, thread_info=True)
+        ret = func(*args, **kwargs)
+        log(f"  End :: {func.__module__}.{func.__qualname__} ( {func_args_str} )", LOG_EXTREME, pt=True, thread_info=True)
+        return ret
+
+    return wrapper
+
+def thread_info_str():
+    return f"(P:{os.getpid()} T:{threading.get_ident()})"
 
 def rand():
     result = instance_random.random()
@@ -546,3 +565,18 @@ class Profiler:
                 print_results_recursive(tag, results)
 
 profile = Profiler.get_profiler
+
+from .Reticulum import Reticulum
+from .Identity import Identity
+from .Link import Link, RequestReceipt
+from .Channel import MessageBase
+from .Buffer import Buffer, RawChannelReader, RawChannelWriter
+from .Transport import Transport
+from .Discovery import InterfaceAnnouncer
+from .Destination import Destination
+from .Packet import Packet
+from .Packet import PacketReceipt
+from .Resolver import Resolver
+from .Resource import Resource, ResourceAdvertisement
+from .Cryptography import HKDF
+from .Cryptography import Hashes
