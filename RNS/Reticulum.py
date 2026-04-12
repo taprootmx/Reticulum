@@ -215,8 +215,9 @@ class Reticulum:
         """
         return Reticulum.__instance
 
-    def __init__(self,configdir=None, loglevel=None, logdest=None, verbosity=None,
-                 require_shared_instance=False, shared_instance_type=None):
+    def __init__(self, configdir=None, loglevel=None, logdest=None,
+                 logfile=None, verbosity=None, require_shared_instance=False,
+                 shared_instance_type=None):
         """
         Initialises and starts a Reticulum instance. This must be
         done before any other operations, and Reticulum will not
@@ -241,11 +242,15 @@ class Reticulum:
 
         if logdest == RNS.LOG_FILE:
             RNS.logdest = RNS.LOG_FILE
-            RNS.logfile = Reticulum.configdir+"/logfile"
+
+            if logfile:
+                RNS.logfile = logfile
+            else:
+                RNS.logfile = Reticulum.configdir+"/logfile"
         elif callable(logdest):
             RNS.logdest = RNS.LOG_CALLBACK
             RNS.logcall = logdest
-        
+
         Reticulum.configpath    = Reticulum.configdir+"/config"
         Reticulum.storagepath   = Reticulum.configdir+"/storage"
         Reticulum.cachepath     = Reticulum.configdir+"/storage/cache"
