@@ -50,6 +50,9 @@ class InterfaceAnnouncer():
         self.stamper      = LXStamper
         self.stamp_cache  = {}
 
+        self.stamp_cache_path = os.path.join(RNS.Reticulum.storagepath, "discovery", "stamp_cache")
+        if not os.path.isdir(self.stamp_cache_path): os.makedirs(self.stamp_cache_path)
+
         if self.owner.has_network_identity(): identity = self.owner.network_identity
         else:                                 identity = self.owner.identity
 
@@ -166,10 +169,30 @@ class InterfaceAnnouncer():
             packed    = msgpack.packb(info)
             infohash  = RNS.Identity.full_hash(packed)
 
-            if infohash in self.stamp_cache: stamp = self.stamp_cache[infohash]
-            else: stamp, v = self.stamper.generate_stamp(infohash, stamp_cost=stamp_value, expand_rounds=self.WORKBLOCK_EXPAND_ROUNDS)
-            if not stamp: return None
-            else: self.stamp_cache[infohash] = stamp
+
+            filepath = os.path.join(self.stamp_cache_path, RNS.hexrep(infohash, delimit=False))
+            stamp_valid = False
+
+            if infohash in self.stamp_cache:
+                stamp = self.stamp_cache[infohash]
+                stamp_valid = True
+            elif os.path.isfile(filepath):
+                with open(filepath, "rb") as f: stamp = f.read()
+                workblock   = self.stamper.stamp_workblock(infohash, expand_rounds=InterfaceAnnouncer.WORKBLOCK_EXPAND_ROUNDS)
+                value       = self.stamper.stamp_value(workblock, stamp)
+                stamp_valid = self.stamper.stamp_valid(stamp, stamp_value, workblock)
+
+            if not stamp_valid:
+                RNS.log(f"No valid stamp in cache for discovery announce, generating", RNS.LOG_EXTREME)
+                stamp, v = self.stamper.generate_stamp(infohash, stamp_cost=stamp_value, expand_rounds=self.WORKBLOCK_EXPAND_ROUNDS)
+            else:
+                RNS.log(f"Loaded valid stamp from cache for discovery announce", RNS.LOG_EXTREME)
+
+            if not stamp:
+                return None
+            else:
+                self.stamp_cache[infohash] = stamp
+                with open(filepath, "wb") as f: f.write(stamp)
 
             if interface.discovery_encrypt:
                 flags |= InterfaceAnnounceHandler.FLAG_ENCRYPTED
